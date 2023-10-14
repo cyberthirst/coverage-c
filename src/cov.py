@@ -4,6 +4,52 @@ import argparse
 
 
 from pycparser import parse_file
+from pycparser.c_ast import NodeVisitor
+
+
+class InstrumentationVisitor(NodeVisitor):
+    def __init__(self):
+        self.files_to_lines = {}
+
+    def add_line(self, node):
+        if node.coord.file not in self.files_to_lines:
+            self.files_to_lines[node.coord.file] = set()
+        self.files_to_lines[node.coord.file].add(node.coord.line)
+
+    def visit_FuncCall(self, node):
+        self.add_line(node)
+
+    def visit_FuncDef(self, node):
+        if node.coord.file.endswith('.c'):
+            self.add_line(node)
+            self.generic_visit(node)
+
+
+    def visit_FuncDecl(self, node):
+        if node.coord.file.endswith('.c'):
+            self.add_line(node)
+            self.generic_visit(node)
+
+    def visit_Compound(self, node):
+        self.add_line(node)
+        self.generic_visit(node)
+
+    def visit_Assignment(self, node):
+        self.add_line(node)
+        self.generic_visit(node)
+
+    def visit_BinaryOp(self, node):
+        self.add_line(node)
+        self.generic_visit(node)
+
+    # You can continue adding visit methods for other statement nodes like If, While, For, Return, etc.
+
+    def generic_visit(self, node):
+        """ Called if no explicit visitor function exists for a
+            node. Implements preorder visiting of the node.
+        """
+        for child_name, child in node.children():
+            self.visit(child)
 
 
 def find_main_function(directory):
@@ -32,12 +78,29 @@ def find_main_function(directory):
     return main_files[0]
 
 
+def instrument_directory(input_dir, output_directory=None):
+
+    main_file_path = find_main_function(input_dir)
+
+    # Get a list of all .c files in the directory
+    c_files = [os.path.join(root, file)
+               for root, dirs, files in os.walk(input_dir)
+               for file in files if file.endswith('.c')]
+
+    # Instrument each .c file
+    for c_file in c_files:
+        output_file = None
+        if output_directory:
+            output_file = os.path.join(output_directory, os.path.basename(c_file))
+        instrument_file(c_file, output_file)
+
+
 def instrument_file(input_file, output_file=None):
     """
     algorithm:
 
     gather instrumentation information:
-    0. initilize files_to_lines = {}, example: {path/file0 : [line_to_instrument1, line_to_instrument2, ...]}
+    0. initialize files_to_lines = {}, example: {path/file0 : set(line_to_instrument1, line_to_instrument2, ...)}
     1. visit all the relevant nodes
     2. for each relevant node add: files_to_lines[node.coord.file].append(node.coord.line)
 
@@ -49,7 +112,13 @@ def instrument_file(input_file, output_file=None):
     ast = parse_file(input_file, use_cpp=True,
                      cpp_path='gcc',
                      cpp_args=['-E', r'-Ipycparser/utils/fake_libc_include'])
-    ast.show(showcoord=True)
+
+    lv = InstrumentationVisitor()
+    lv.visit(ast)
+
+    #ast.show(showcoord=True)
+
+    print(lv.files_to_lines)
 
 
 def main():
@@ -73,12 +142,11 @@ def main():
 
     elif args.input_dir:
         try:
-            main_file_path = find_main_function(args.input_dir)
-            if args.output_file:
-                instrument_file(main_file_path, args.output_file)
+            if args.output_dir:
+                instrument_directory(args.input_dir, args.output_dir)
             else:
-                print(f"Warning: No output file specified. The file {main_file_path} will be modified in-place.")
-                instrument_file(main_file_path)
+                print(f"Warning: No output dir specified. The dir {args.output_dir} will be modified in-place.")
+                instrument_directory(args.input_dir)
         except ValueError as e:
             print(f"Error: {e}")
 
