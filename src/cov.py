@@ -6,10 +6,14 @@ import argparse
 from pycparser import parse_file
 from pycparser.c_ast import NodeVisitor
 
+#keccak256("instrumentation-skrabmir")
+# - used to avoid name collissions with the instrumented code
+INS_PREFIX = "98b30b1e82017f82d4388ed4555f8f7c4053e3d1f456b1baf24e402e015a0f21"[:8]
 
 class InstrumentationVisitor(NodeVisitor):
     def __init__(self):
         self.files_to_lines = {}
+        self.main_def_line = None
 
     def add_line(self, node):
         if node.coord.file not in self.files_to_lines:
@@ -21,14 +25,16 @@ class InstrumentationVisitor(NodeVisitor):
 
     def visit_FuncDef(self, node):
         if node.coord.file.endswith('.c'):
+            #name = getattr(node, 'name', None)
             self.add_line(node)
             self.generic_visit(node)
 
-
+    """
     def visit_FuncDecl(self, node):
         if node.coord.file.endswith('.c'):
             self.add_line(node)
             self.generic_visit(node)
+    """
 
     def visit_Compound(self, node):
         self.add_line(node)
@@ -92,10 +98,51 @@ def instrument_directory(input_dir, output_directory=None):
         output_file = None
         if output_directory:
             output_file = os.path.join(output_directory, os.path.basename(c_file))
-        instrument_file(c_file, output_file)
+        get_instrumentation_info(c_file)
 
+def construct_c_helpers(files_to_lines):
+    contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n #define INSTRUMENTATION_{INS_PREFIX}_H\n"
+    contents_c = f"#include \"instrumentation_{INS_PREFIX}.h\"\n"
 
-def instrument_file(input_file, output_file=None):
+    for file, lines in files_to_lines.items():
+        contents_h += f"extern int instrumentation_{file}[len({lines})];\n"
+        pass
+
+    contents_h += "void write_instrumentation_info(char* file, int* arr, int len);\n"
+    contents_h += "void write_instrumentation_info();\n"
+
+    contents_h += "#endif\n"
+
+    #instrumentation_inf.txt will have the following format:
+    # <file_name1>:arr1[0],arr1[1],...,arr1[len(arr1)-1]
+    # <file_name2>:arr2[0],arr2[1],...,arr2[len(arr2)-1]
+    fun1 = "void write_instrumentation_info(char* file, int* arr, int len) {\n"
+    fun1 += "    FILE* f = fopen(\"instrumentation_info.txt\", \"a\");\n"
+    fun1 += "    fprintf(f, \"%s:\", file);\n"
+    fun1 += "    for (int i = 0; i < len; i++) {\n"
+    fun1 += "        fprintf(f, \"%d\", arr[i]);\n"
+    fun1 += "        if (i < len - 1) {\n"
+    fun1 += "            fprintf(f, \",\");\n"
+    fun1 += "        }\n"
+    fun1 += "    }\n"
+    fun1 += "    fprintf(f, \"\\n\");\n"
+    fun1 += "    fclose(f);\n"
+
+    contents_c += fun1
+
+    fun2 = "void write_instrumentation_info() {\n"
+    for file, lines in files_to_lines.items():
+        fun2 += f"    write_instrumentation_info(\"{file}\", instrumentation_{file}, len(instrumentation_{file}));\n"
+    fun2 += "}\n"
+
+    contents_c += fun2
+
+    with open(f"instrumentation_{INS_PREFIX}.h", "w") as f:
+        f.write(contents_h)
+
+    return
+
+def get_instrumentation_info(input_file):
     """
     algorithm:
 
@@ -107,6 +154,7 @@ def instrument_file(input_file, output_file=None):
     instrumentation:
     0. declare instrumentation_{filename}[num_of_lines{filename}] statically alocated variable
     1. include funtion for writing the instrumentation information to a file
+    2. - the function will take all the instrumentation_{filename} arrays and write them to a file
     """
 
     ast = parse_file(input_file, use_cpp=True,
@@ -116,9 +164,11 @@ def instrument_file(input_file, output_file=None):
     lv = InstrumentationVisitor()
     lv.visit(ast)
 
-    #ast.show(showcoord=True)
+    ast.show(showcoord=True)
 
     print(lv.files_to_lines)
+
+    return lv.files_to_lines
 
 
 def main():
