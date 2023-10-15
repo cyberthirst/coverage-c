@@ -14,6 +14,7 @@ class InstrumentationVisitor(NodeVisitor):
     def __init__(self):
         self.files_to_lines = {}
         self.main_def_line = None
+        self.inside_fun = False
 
     def add_line(self, node):
         if node.coord.file not in self.files_to_lines:
@@ -22,26 +23,32 @@ class InstrumentationVisitor(NodeVisitor):
 
     def visit_FuncCall(self, node):
         self.add_line(node)
+        self.generic_visit(node)
+
+    def visit_Return(self, node):
+        self.add_line(node)
+        self.generic_visit(node)
 
     """
     def visit_FuncDef(self, node):
-        if node.coord.file.endswith('.c'):
-            #name = getattr(node, 'name', None)
-            self.add_line(node)
-            self.generic_visit(node)
-    """
+        #name = getattr(node, 'name', None)
+        self.inside_fun = True
+        self.generic_visit(node)
+        self.inside_fun = False
 
 
-    """
     def visit_FuncDecl(self, node):
-        if node.coord.file.endswith('.c'):
-            self.add_line(node)
+        if self.inside_fun:
+           self.generic_visit(node)
+        else:
+            self.inside_fun = True
             self.generic_visit(node)
-    """
+            self.inside_fun = False
 
     def visit_Compound(self, node):
         self.add_line(node)
         self.generic_visit(node)
+    """
 
     def visit_Assignment(self, node):
         self.add_line(node)
@@ -51,7 +58,6 @@ class InstrumentationVisitor(NodeVisitor):
         self.add_line(node)
         self.generic_visit(node)
 
-    # You can continue adding visit methods for other statement nodes like If, While, For, Return, etc.
 
     def generic_visit(self, node):
         """ Called if no explicit visitor function exists for a
@@ -59,6 +65,25 @@ class InstrumentationVisitor(NodeVisitor):
         """
         for child_name, child in node.children():
             self.visit(child)
+
+
+class MainFunctionVisitor(NodeVisitor):
+    def __init__(self):
+        self.main_body_coords = []
+
+    def visit_FuncDef(self, node):
+        function_name = node.decl.name
+        if function_name == "main":
+            compound_node = node.body
+            coords = compound_node.coord
+            self.main_body_coords.append(coords)
+        self.generic_visit(node)
+
+
+def find_main_function_bodies(ast_root):
+    visitor = MainFunctionVisitor()
+    visitor.visit(ast_root)
+    return visitor.main_body_coords
 
 
 def find_main_function(directory):
@@ -97,11 +122,14 @@ def instrument_file(input_file, files_to_lines=None, output_file=None):
     with open(input_file, 'r') as file:
         lines = file.readlines()
 
+    file_len = len(lines)
 
     # Modifying the lines as per the instrumentation
-    for i in range(len(lines)):
-        if i+1 in lines_to_modify:
-            lines[i] = f"instrumentation_{normalize_filename(input_file)}[{i}] += 1;{lines[i].rstrip()}\n"
+    #for i in range(len(lines)):
+    #    if i+1 in lines_to_modify:
+    #        lines[i] = f"instrumentation_{normalize_filename(input_file)}[{i}] += 1;{lines[i].rstrip()}\n"
+    for ln in lines_to_modify:
+        lines[ln-1] = f"instrumentation_{normalize_filename(input_file)}[{ln-1}] += 1;{lines[ln-1].rstrip()}\n"
 
 
     # Including the arrays at the top of the file
@@ -109,8 +137,10 @@ def instrument_file(input_file, files_to_lines=None, output_file=None):
 
     # Writing the modified content back to the file
     output_file_path = output_file or input_file
-    #with open(output_file_path, 'w') as file:
-    #    file.writelines(lines)
+    with open(output_file_path, 'w') as file:
+        file.writelines(lines)
+
+    return file_len
 
 
 
@@ -124,9 +154,15 @@ def instrument_directory(input_dir, output_directory=None):
                for file in files if file.endswith('.c')]
 
     files_to_lines = {}
+    file_lens = {}
+    main_coords = []
+
     # Instrument each .c file
     for c_file in c_files:
-        files_to_lines.update(get_instrumentation_info(c_file))
+        ftl, mc = get_instrumentation_info(c_file)
+        files_to_lines.update(ftl)
+        main_coords += mc
+        assert len(main_coords) <= 1, "There should be at most one main function."
 
         if output_directory:
             # Get the relative path of the c_file with respect to input_dir
@@ -138,9 +174,12 @@ def instrument_directory(input_dir, output_directory=None):
         else:
             output_file = None
 
-        instrument_file(c_file, files_to_lines, output_file)
+        file_len = instrument_file(c_file, files_to_lines, output_file)
+        file_lens[c_file] = file_len
 
-    construct_c_helpers(files_to_lines, output_directory=output_directory)
+    assert len(main_coords) == 1, "There should be exactly one main function."
+    print(f"main_coords: file: {main_coords[0].file}, line: {main_coords[0].line}")
+    construct_c_helpers(files_to_lines, file_lens, output_directory=output_directory)
 
 def normalize_filename(filename):
     """
@@ -151,13 +190,12 @@ def normalize_filename(filename):
     return re.sub(r'[^a-zA-Z0-9_]', '_', filename)
 
 
-def construct_c_helpers(files_to_lines, output_directory=None):
+def construct_c_helpers(files_to_lines, file_lens, output_directory=None):
     contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n#define INSTRUMENTATION_{INS_PREFIX}_H\n"
     contents_c = f"#include \"instrumentation_{INS_PREFIX}.h\"\n"
 
-    for file, lines in files_to_lines.items():
-        contents_h += f"extern int instrumentation_{normalize_filename(file)}[{len(lines)}];\n"
-        pass
+    for file  in files_to_lines.keys():
+        contents_h += f"extern int instrumentation_{normalize_filename(file)}[{file_lens[file]}];\n"
 
     contents_h += f"void write_instrumentation_info_{INS_PREFIX}(char* file, int* arr, int len);\n"
     contents_h += f"void write_instrumentation_info_{INS_PREFIX}();\n"
@@ -167,25 +205,27 @@ def construct_c_helpers(files_to_lines, output_directory=None):
     #instrumentation_inf.txt will have the following format:
     # <file_name1>:arr1[0],arr1[1],...,arr1[len(arr1)-1]
     # <file_name2>:arr2[0],arr2[1],...,arr2[len(arr2)-1]
-    fun1 = "void write_instrumentation_info(char* file, int* arr, int len) {\n"
-    fun1 += "    FILE* f = fopen(\"instrumentation_info.txt\", \"a\");\n"
-    fun1 += "    fprintf(f, \"%s:\", file);\n"
-    fun1 += "    for (int i = 0; i < len; i++) {\n"
-    fun1 += "        fprintf(f, \"%d\", arr[i]);\n"
-    fun1 += "        if (i < len - 1) {\n"
-    fun1 += "            fprintf(f, \",\");\n"
-    fun1 += "        }\n"
-    fun1 += "    }\n"
-    fun1 += "    fprintf(f, \"\\n\");\n"
-    fun1 += "    fclose(f);\n"
-    fun1 += "}\n"
+    fun1 = """
+    void write_instrumentation_info(char* file, int* arr, int len) {
+        FILE* f = fopen("instrumentation_info.txt", "a");
+        fprintf(f, "%s:", file);
+        for (int i = 0; i < len; i++) {
+            fprintf(f, "%d", arr[i]);
+            if (i < len - 1) {
+                fprintf(f, ",");
+            }
+        }
+        fprintf(f, "\\n");
+        fclose(f);
+    }
+    """
 
     contents_c += fun1
 
     fun2 = f"void write_instrumentation_info_{INS_PREFIX}() {{\n"
-    for file, lines in files_to_lines.items():
+    for file in files_to_lines.keys():
         normalized = normalize_filename(file)
-        fun2 += f"    write_instrumentation_info_{INS_PREFIX}(\"{file}\", instrumentation_{normalized}, {len(lines)}));\n"
+        fun2 += f"    write_instrumentation_info_{INS_PREFIX}(\"{file}\", instrumentation_{normalized}, {file_lens[file]}));\n"
     fun2 += "}\n"
 
     contents_c += fun2
@@ -222,11 +262,14 @@ def get_instrumentation_info(input_file):
     lv = InstrumentationVisitor()
     lv.visit(ast)
 
-    ast.show(showcoord=True)
+
+    main_coords = find_main_function_bodies(ast)
+
+    #ast.show(showcoord=True)
 
     print(lv.files_to_lines)
 
-    return lv.files_to_lines
+    return lv.files_to_lines, main_coords
 
 
 def main():
