@@ -23,11 +23,14 @@ class InstrumentationVisitor(NodeVisitor):
     def visit_FuncCall(self, node):
         self.add_line(node)
 
+    """
     def visit_FuncDef(self, node):
         if node.coord.file.endswith('.c'):
             #name = getattr(node, 'name', None)
             self.add_line(node)
             self.generic_visit(node)
+    """
+
 
     """
     def visit_FuncDecl(self, node):
@@ -84,6 +87,33 @@ def find_main_function(directory):
     return main_files[0]
 
 
+def instrument_file(input_file, files_to_lines=None, output_file=None):
+    if not files_to_lines:
+        files_to_lines = get_instrumentation_info(input_file)
+
+    lines_to_modify = files_to_lines.get(input_file, set())
+
+    # Reading the content of the input file
+    with open(input_file, 'r') as file:
+        lines = file.readlines()
+
+
+    # Modifying the lines as per the instrumentation
+    for i in range(len(lines)):
+        if i+1 in lines_to_modify:
+            lines[i] = f"instrumentation_{normalize_filename(input_file)}[{i}] += 1;{lines[i].rstrip()}\n"
+
+
+    # Including the arrays at the top of the file
+    lines.insert(0, f'#include "instrumentation_{INS_PREFIX}.h"\n')
+
+    # Writing the modified content back to the file
+    output_file_path = output_file or input_file
+    #with open(output_file_path, 'w') as file:
+    #    file.writelines(lines)
+
+
+
 def instrument_directory(input_dir, output_directory=None):
 
     main_file_path = find_main_function(input_dir)
@@ -93,23 +123,44 @@ def instrument_directory(input_dir, output_directory=None):
                for root, dirs, files in os.walk(input_dir)
                for file in files if file.endswith('.c')]
 
+    files_to_lines = {}
     # Instrument each .c file
     for c_file in c_files:
-        output_file = None
-        if output_directory:
-            output_file = os.path.join(output_directory, os.path.basename(c_file))
-        get_instrumentation_info(c_file)
+        files_to_lines.update(get_instrumentation_info(c_file))
 
-def construct_c_helpers(files_to_lines):
-    contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n #define INSTRUMENTATION_{INS_PREFIX}_H\n"
+        if output_directory:
+            # Get the relative path of the c_file with respect to input_dir
+            relative_path = os.path.relpath(c_file, input_dir)
+            # Join the relative path with output_directory
+            output_file = os.path.join(output_directory, relative_path)
+            # Ensure the directory for the output file exists
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        else:
+            output_file = None
+
+        instrument_file(c_file, files_to_lines, output_file)
+
+    construct_c_helpers(files_to_lines, output_directory=output_directory)
+
+def normalize_filename(filename):
+    """
+    Normalize filename to be used as a C variable.
+    Replace characters like '.', '/', '-', etc. with '_'
+    """
+    # Replace non-alphanumeric characters (except underscores) with '_'
+    return re.sub(r'[^a-zA-Z0-9_]', '_', filename)
+
+
+def construct_c_helpers(files_to_lines, output_directory=None):
+    contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n#define INSTRUMENTATION_{INS_PREFIX}_H\n"
     contents_c = f"#include \"instrumentation_{INS_PREFIX}.h\"\n"
 
     for file, lines in files_to_lines.items():
-        contents_h += f"extern int instrumentation_{file}[len({lines})];\n"
+        contents_h += f"extern int instrumentation_{normalize_filename(file)}[{len(lines)}];\n"
         pass
 
-    contents_h += "void write_instrumentation_info(char* file, int* arr, int len);\n"
-    contents_h += "void write_instrumentation_info();\n"
+    contents_h += f"void write_instrumentation_info_{INS_PREFIX}(char* file, int* arr, int len);\n"
+    contents_h += f"void write_instrumentation_info_{INS_PREFIX}();\n"
 
     contents_h += "#endif\n"
 
@@ -127,18 +178,25 @@ def construct_c_helpers(files_to_lines):
     fun1 += "    }\n"
     fun1 += "    fprintf(f, \"\\n\");\n"
     fun1 += "    fclose(f);\n"
+    fun1 += "}\n"
 
     contents_c += fun1
 
-    fun2 = "void write_instrumentation_info() {\n"
+    fun2 = f"void write_instrumentation_info_{INS_PREFIX}() {{\n"
     for file, lines in files_to_lines.items():
-        fun2 += f"    write_instrumentation_info(\"{file}\", instrumentation_{file}, len(instrumentation_{file}));\n"
+        normalized = normalize_filename(file)
+        fun2 += f"    write_instrumentation_info_{INS_PREFIX}(\"{file}\", instrumentation_{normalized}, {len(lines)}));\n"
     fun2 += "}\n"
 
     contents_c += fun2
 
-    with open(f"instrumentation_{INS_PREFIX}.h", "w") as f:
+    filename_prefix = os.path.join(output_directory or "", f"instrumentation_{INS_PREFIX}")
+
+    with open(f"{filename_prefix}.h", "w") as f:
         f.write(contents_h)
+
+    with open(f"{filename_prefix}.c", "w") as f:
+        f.write(contents_c)
 
     return
 
