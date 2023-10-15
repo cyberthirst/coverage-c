@@ -86,35 +86,12 @@ def find_main_function_bodies(ast_root):
     return visitor.main_body_coords
 
 
-def find_main_function(directory):
-    """
-    Find the file containing the main function in the given directory.
-    """
-    main_files = []
 
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            if file.endswith('.c'):
-                file_path = os.path.join(root, file)
-                with open(file_path, 'r') as f:
-                    contents = f.read()
-                    # Using regex to find the main function signature
-                    if re.search(r'int\s+main\s*\(', contents) or \
-                       re.search(r'void\s+main\s*\(', contents):
-                        main_files.append(file_path)
-
-    if len(main_files) != 1:
-        print("There should be exactly one file with a main function. Currently, there are: ")
-        for file in main_files:
-            print(file)
-        raise ValueError("Too many main functions found.")
-
-    return main_files[0]
-
-
-def instrument_file(input_file, files_to_lines=None, output_file=None):
+def instrument_file(input_file, main_coords=None, files_to_lines=None, output_file=None):
     if not files_to_lines:
-        files_to_lines = get_instrumentation_info(input_file)
+        files_to_lines, main_coords = get_instrumentation_info(input_file)
+        assert len(main_coords) == 1, "There should be exactly one main function."
+
 
     lines_to_modify = files_to_lines.get(input_file, set())
 
@@ -132,6 +109,10 @@ def instrument_file(input_file, files_to_lines=None, output_file=None):
         lines[ln-1] = f"instrumentation_{normalize_filename(input_file)}[{ln-1}] += 1;{lines[ln-1].rstrip()}\n"
 
 
+    if main_coords != None:
+        lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{INS_PREFIX})) return EXIT_FAILURE;\n")
+
+
     # Including the arrays at the top of the file
     lines.insert(0, f'#include "instrumentation_{INS_PREFIX}.h"\n')
 
@@ -145,9 +126,6 @@ def instrument_file(input_file, files_to_lines=None, output_file=None):
 
 
 def instrument_directory(input_dir, output_directory=None):
-
-    main_file_path = find_main_function(input_dir)
-
     # Get a list of all .c files in the directory
     c_files = [os.path.join(root, file)
                for root, dirs, files in os.walk(input_dir)
@@ -155,14 +133,13 @@ def instrument_directory(input_dir, output_directory=None):
 
     files_to_lines = {}
     file_lens = {}
-    main_coords = []
+    main_coords = [None]*len(c_files)
 
     # Instrument each .c file
-    for c_file in c_files:
+    for i, c_file in enumerate(c_files):
         ftl, mc = get_instrumentation_info(c_file)
         files_to_lines.update(ftl)
-        main_coords += mc
-        assert len(main_coords) <= 1, "There should be at most one main function."
+        main_coords[i] = mc
 
         if output_directory:
             # Get the relative path of the c_file with respect to input_dir
@@ -174,11 +151,10 @@ def instrument_directory(input_dir, output_directory=None):
         else:
             output_file = None
 
-        file_len = instrument_file(c_file, files_to_lines, output_file)
+        file_len = instrument_file(c_file, main_coords=main_coords[i], files_to_lines=files_to_lines, output_file=output_file)
         file_lens[c_file] = file_len
 
-    assert len(main_coords) == 1, "There should be exactly one main function."
-    print(f"main_coords: file: {main_coords[0].file}, line: {main_coords[0].line}")
+    assert sum(x is not None for x in main_coords) == 1,"There should be exactly one main function."
     construct_c_helpers(files_to_lines, file_lens, output_directory=output_directory)
 
 def normalize_filename(filename):
@@ -264,12 +240,13 @@ def get_instrumentation_info(input_file):
 
 
     main_coords = find_main_function_bodies(ast)
+    assert len(main_coords) <= 1, "There should be at most one main function."
 
     #ast.show(showcoord=True)
 
     print(lv.files_to_lines)
 
-    return lv.files_to_lines, main_coords
+    return lv.files_to_lines, next(iter(main_coords), None)
 
 
 def main():
