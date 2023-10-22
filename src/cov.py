@@ -167,12 +167,14 @@ def get_instrumentation_info(input_file):
 
 def construct_c_helpers(files_to_lines, file_lens, output_directory=None, output_file=None, input_file=None):
     contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n#define INSTRUMENTATION_{INS_PREFIX}_H\n"
+    contents_h += "#include<stdio.h>\n"
+    contents_h += "#include<stdlib.h>\n\n"
     contents_c = f"#include \"instrumentation_{INS_PREFIX}.h\"\n"
 
     for file  in files_to_lines.keys():
         contents_h += f"extern int instrumentation_{normalize_filename(file)}[{file_lens[file]}];\n"
 
-    contents_h += f"void write_instrumentation_info_{INS_PREFIX}(char* file, int* arr, int len);\n"
+    contents_h += f"void write_file_instrumentation_info_{INS_PREFIX}(char* file, int* arr, int len);\n"
     contents_h += f"void write_instrumentation_info_{INS_PREFIX}();\n"
 
     contents_h += "#endif\n"
@@ -181,26 +183,27 @@ def construct_c_helpers(files_to_lines, file_lens, output_directory=None, output
     # <file_name1>:arr1[0],arr1[1],...,arr1[len(arr1)-1]
     # <file_name2>:arr2[0],arr2[1],...,arr2[len(arr2)-1]
     fun1 = """
-    void write_instrumentation_info(char* file, int* arr, int len) {
-        FILE* f = fopen("instrumentation_info.txt", "a");
-        fprintf(f, "%s:", file);
-        for (int i = 0; i < len; i++) {
-            fprintf(f, "%d", arr[i]);
-            if (i < len - 1) {
-                fprintf(f, ",");
-            }
+void write_file_instrumentation_info(char* file, int* arr, int len) {
+    FILE* f = fopen("instrumentation_info.txt", "a");
+    fprintf(f, "%s:", file);
+    for (int i = 0; i < len; i++) {
+        fprintf(f, "%d", arr[i]);
+        if (i < len - 1) {
+            fprintf(f, ",");
         }
-        fprintf(f, "\\n");
-        fclose(f);
     }
-    """
+    fprintf(f, "\\n");
+    fclose(f);
+}
+
+"""
 
     contents_c += fun1
 
     fun2 = f"void write_instrumentation_info_{INS_PREFIX}() {{\n"
     for file in files_to_lines.keys():
         normalized = normalize_filename(file)
-        fun2 += f"    write_instrumentation_info_{INS_PREFIX}(\"{file}\", instrumentation_{normalized}, {file_lens[file]}));\n"
+        fun2 += f"  write_file_instrumentation_info_{INS_PREFIX}(\"{file}\", instrumentation_{normalized}, {file_lens[file]});\n"
     fun2 += "}\n"
 
     contents_c += fun2
