@@ -1,6 +1,7 @@
 import re
 import os
 import argparse
+import shutil
 
 
 from pycparser import parse_file
@@ -262,6 +263,59 @@ def instrument_files(input_path, output_directory=None, output_file=None):
                         output_file=output_file, input_file=input_path)
 
 
+def copy_tree(src_dir, dst_dir):
+    if not os.path.exists(dst_dir):
+        os.makedirs(dst_dir)
+
+    for item in os.listdir(src_dir):
+        src_item = os.path.join(src_dir, item)
+        dst_item = os.path.join(dst_dir, item)
+
+        if os.path.isdir(src_item):
+            copy_tree(src_item, dst_item)
+        else:
+            shutil.copy2(src_item, dst_item)
+
+
+#prepares the output files/direcotory
+# copies the inputs to output
+#then the output files will be modified in place
+def preprocess_files(args):
+    source_path = None
+
+    if args.input_file:
+        if args.output_file:
+            shutil.copy2(args.input_file, args.output_file)
+            source_path = args.output_file
+
+        elif args.output_dir:
+            output_file_path = os.path.join(args.output_dir, os.path.basename(args.input_file))
+            shutil.copy2(args.input_file, output_file_path)
+            source_path = output_file_path
+
+        else:
+            print("Warning: No output file or dir specified. The input file will be modified in-place.")
+            source_path = args.input_file
+
+    elif args.input_dir:
+        try:
+            if args.output_file:
+                raise ValueError("Error: Cannot specify an input directory and an output file.")
+            elif args.output_dir:
+                # No longer removing the output directory, instead merging contents
+                copy_tree(args.input_dir, args.output_dir)
+                source_path = args.output_dir
+            else:
+                print(f"Warning: No output dir specified. The dir {args.input_dir} will be modified in-place.")
+                source_path = args.input_dir
+
+        except ValueError as e:
+            print(f"Error: {e}")
+            return None
+
+    return source_path
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='Instrument C files.')
@@ -275,24 +329,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.input_file:
-        if args.output_file:
-            instrument_files(args.input_file, args.output_file)
-        else:
-            print("Warning: No output file specified. The input file will be modified in-place.")
-            instrument_files(args.input_file)
+    to_process = preprocess_files(args)
 
-    elif args.input_dir:
-        try:
-            if args.output_dir:
-                instrument_files(args.input_dir, args.output_dir)
-            elif args.output_file:
-                raise ValueError("Error: Cannot specify an input directory and an output file.")
-            else:
-                print(f"Warning: No output dir specified. The dir {args.output_dir} will be modified in-place.")
-                instrument_files(args.input_dir)
-        except ValueError as e:
-            print(f"Error: {e}")
+    if to_process:  # Check if preprocessing was successful
+        instrument_files(to_process)
 
 
 if __name__ == '__main__':
