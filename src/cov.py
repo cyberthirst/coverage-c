@@ -306,7 +306,7 @@ def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
     # full path to the output executable
     executable_path = os.path.join(output_path, executable_name)
 
-    command = ["gcc", "-o", executable_path] + c_files
+    command = ["gcc", "-O0", "-o", executable_path] + c_files
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     stdout, stderr = process.communicate()
@@ -318,6 +318,7 @@ def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
         print(f"Compilation successful. Executable named '{executable_name}' has been created at '{output_path}'.")
 
     # changing to the output directory to run the executable
+    original_working_directory = os.getcwd()
     os.chdir(output_path)
 
     process = subprocess.Popen([f"./{executable_name}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -329,6 +330,35 @@ def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
     if stderr:
         print("Errors/warnings from the executable:")
         print(stderr.decode("utf-8"))
+
+    os.chdir(original_working_directory)
+
+
+def convert_to_lcov(output_path):
+    input_file = os.path.join(output_path, f"instrumentation_info_{HASH}.txt")
+    print(f"input_file: {input_file}")
+    output_file = os.path.join(output_path, "lcov.info")
+
+    with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
+        lines = infile.readlines()
+
+        for line in lines:
+            file_path, coverage_info = line.strip().split(":")
+            file_path = file_path.replace(output_path, '', 1).lstrip('/')
+            coverage_data = coverage_info.split(',')
+
+            outfile.write(f"TN:test\n")
+            outfile.write(f"SF:{file_path}\n")
+
+            for i, hits in enumerate(coverage_data):
+                outfile.write(f"DA:{i + 1},{hits}\n")
+
+            lh = sum(1 for hits in coverage_data if int(hits) > 0)
+            lf = len(coverage_data)
+            outfile.write(f"LH:{lh}\n")
+            outfile.write(f"LF:{lf}\n")
+
+            outfile.write("end_of_record\n")
 
 
 def main():
@@ -353,7 +383,10 @@ def main():
     c_files.extend(files_to_lines.keys())
 
     output_path = path if os.path.isdir(path) else os.path.dirname(path)
+
     compile_and_run(c_files, output_path)
+
+    convert_to_lcov(output_path)
 
 
 if __name__ == '__main__':
