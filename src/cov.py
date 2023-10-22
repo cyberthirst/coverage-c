@@ -9,7 +9,7 @@ from pycparser.c_ast import NodeVisitor
 
 #keccak256("instrumentation-skrabmir")
 # - used to avoid name collissions with the instrumented code
-INS_PREFIX = "98b30b1e82017f82d4388ed4555f8f7c4053e3d1f456b1baf24e402e015a0f21"[:8]
+HASH = "98b30b1e82017f82d4388ed4555f8f7c4053e3d1f456b1baf24e402e015a0f21"[:8]
 
 class InstrumentationVisitor(NodeVisitor):
     def __init__(self):
@@ -109,9 +109,9 @@ def instrument_file(input_file, root, main_coords, files_to_lines):
         lines[ln-1] = f"instrumentation_{normalize_filename(input_file)}[{ln-1}] += 1;{lines[ln-1].rstrip()}\n"
 
     if main_coords != None:
-        lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{INS_PREFIX})) return EXIT_FAILURE;\n")
+        lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{HASH})) return EXIT_FAILURE;\n")
 
-    include_path = f'instrumentation_{INS_PREFIX}.h'
+    include_path = f'instrumentation_{HASH}.h'
     input_file_dir = os.path.dirname(input_file)
     # normalizing the paths to be relative
     include_path = os.path.join(os.path.relpath(root, start=input_file_dir), include_path)
@@ -161,57 +161,58 @@ def get_instrumentation_info(input_file):
 
 
 def construct_c_helpers(files_to_lines, file_lens, path):
-    contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n#define INSTRUMENTATION_{INS_PREFIX}_H\n"
+    contents_h = f"#ifndef INSTRUMENTATION_{HASH}_H\n#define INSTRUMENTATION_{HASH}_H\n"
     contents_h += "#include<stdio.h>\n"
     contents_h += "#include<stdlib.h>\n\n"
-    contents_c = f"#include \"instrumentation_{INS_PREFIX}.h\"\n"
+    contents_c = f"#include \"instrumentation_{HASH}.h\"\n"
 
     for file  in files_to_lines.keys():
-        contents_h += f"extern int instrumentation_{normalize_filename(file)}[{file_lens[file]}];\n"
+        contents_h += f"int instrumentation_{normalize_filename(file)}[{file_lens[file]}];\n"
 
-    contents_h += f"void write_file_instrumentation_info_{INS_PREFIX}(char* file, int* arr, int len);\n"
-    contents_h += f"void write_instrumentation_info_{INS_PREFIX}();\n"
+    contents_h += f"void write_file_instrumentation_info_{HASH}(char* file, int* arr, int len);\n"
+    contents_h += f"void write_instrumentation_info_{HASH}();\n"
 
     contents_h += "#endif\n"
 
     #instrumentation_inf.txt will have the following format:
     # <file_name1>:arr1[0],arr1[1],...,arr1[len(arr1)-1]
     # <file_name2>:arr2[0],arr2[1],...,arr2[len(arr2)-1]
-    fun1 = """
-void write_file_instrumentation_info(char* file, int* arr, int len) {
-    FILE* f = fopen("instrumentation_info.txt", "a");
+    output_directory = path if os.path.isdir(path) else os.path.dirname(path)
+    print(f"output directory: {output_directory}")
+    fun1 = f"""
+void write_file_instrumentation_info_{HASH}(char* file, int* arr, int len) {{
+    FILE* f = fopen("instrumentation_info_{HASH}.txt", "a");
     fprintf(f, "%s:", file);
-    for (int i = 0; i < len; i++) {
+    for (int i = 0; i < len; i++) {{
         fprintf(f, "%d", arr[i]);
-        if (i < len - 1) {
+        if (i < len - 1) {{
             fprintf(f, ",");
-        }
-    }
+        }}
+    }}
     fprintf(f, "\\n");
     fclose(f);
-}
+}}
 
 """
 
     contents_c += fun1
 
-    fun2 = f"void write_instrumentation_info_{INS_PREFIX}() {{\n"
+    fun2 = f"void write_instrumentation_info_{HASH}() {{\n"
     for file in files_to_lines.keys():
         normalized = normalize_filename(file)
-        fun2 += f"  write_file_instrumentation_info_{INS_PREFIX}(\"{file}\", instrumentation_{normalized}, {file_lens[file]});\n"
+        fun2 += f"  write_file_instrumentation_info_{HASH}(\"{file}\", instrumentation_{normalized}, {file_lens[file]});\n"
     fun2 += "}\n"
 
     contents_c += fun2
 
-    output_directory = path if os.path.isdir(path) else os.path.dirname(path)
-    filename = os.path.join(output_directory, f"instrumentation_{INS_PREFIX}")
+    filename = os.path.join(output_directory, f"instrumentation_{HASH}")
     with open(f"{filename}.h", "w") as f:
         f.write(contents_h)
 
     with open(f"{filename}.c", "w") as f:
         f.write(contents_c)
 
-    return
+    return filename + '.c'
 
 
 def instrument_files(path):
@@ -242,7 +243,7 @@ def instrument_files(path):
 
     assert sum(x is not None for x in main_coords) == 1, "There should be exactly one main function."
 
-    construct_c_helpers(files_to_lines, file_lens, path)
+    return files_to_lines, file_lens
 
 
 def copy_tree(src_dir, dst_dir):
@@ -298,6 +299,37 @@ def preprocess_files(args):
     return source_path
 
 
+import subprocess
+
+
+def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
+    # full path to the output executable
+    executable_path = os.path.join(output_path, executable_name)
+
+    command = ["gcc", "-o", executable_path] + c_files
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    stdout, stderr = process.communicate()
+
+    if process.returncode != 0:
+        print(f"Compilation failed with error code {process.returncode}.")
+        print(stderr.decode("utf-8"))
+    else:
+        print(f"Compilation successful. Executable named '{executable_name}' has been created at '{output_path}'.")
+
+    # changing to the output directory to run the executable
+    os.chdir(output_path)
+
+    process = subprocess.Popen([f"./{executable_name}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+
+    print("Output from the executable:")
+    print(stdout.decode("utf-8"))
+
+    if stderr:
+        print("Errors/warnings from the executable:")
+        print(stderr.decode("utf-8"))
+
 
 def main():
     parser = argparse.ArgumentParser(description='Instrument C files.')
@@ -313,23 +345,16 @@ def main():
 
     path = preprocess_files(args)
 
-    if path:
-        instrument_files(path)
+    if not path:
+        return
+
+    files_to_lines, file_lens = instrument_files(path)
+    c_files = [construct_c_helpers(files_to_lines, file_lens, path)]
+    c_files.extend(files_to_lines.keys())
+
+    output_path = path if os.path.isdir(path) else os.path.dirname(path)
+    compile_and_run(c_files, output_path)
 
 
 if __name__ == '__main__':
     main()
-
-
-"""
-TODO:
-1. unify the output path - handle the case of output file and output dir (and input file) in unified way
-2. we need to write the .c and .h helpers to correct destination for all combinations
-  a. only input file
-  b. output file
-  c. output dir
-3. parse the output of the run of the instrumented code
-4. create lcov report
-
-
-"""
