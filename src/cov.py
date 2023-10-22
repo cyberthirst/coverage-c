@@ -86,77 +86,6 @@ def find_main_function_bodies(ast_root):
     return visitor.main_body_coords
 
 
-
-def instrument_file(input_file, main_coords=None, files_to_lines=None, output_file=None):
-    if not files_to_lines:
-        files_to_lines, main_coords = get_instrumentation_info(input_file)
-        assert len(main_coords) == 1, "There should be exactly one main function."
-
-
-    lines_to_modify = files_to_lines.get(input_file, set())
-
-    # Reading the content of the input file
-    with open(input_file, 'r') as file:
-        lines = file.readlines()
-
-    file_len = len(lines)
-
-    # Modifying the lines as per the instrumentation
-    #for i in range(len(lines)):
-    #    if i+1 in lines_to_modify:
-    #        lines[i] = f"instrumentation_{normalize_filename(input_file)}[{i}] += 1;{lines[i].rstrip()}\n"
-    for ln in lines_to_modify:
-        lines[ln-1] = f"instrumentation_{normalize_filename(input_file)}[{ln-1}] += 1;{lines[ln-1].rstrip()}\n"
-
-
-    if main_coords != None:
-        lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{INS_PREFIX})) return EXIT_FAILURE;\n")
-
-
-    # Including the arrays at the top of the file
-    lines.insert(0, f'#include "instrumentation_{INS_PREFIX}.h"\n')
-
-    # Writing the modified content back to the file
-    output_file_path = output_file or input_file
-    with open(output_file_path, 'w') as file:
-        file.writelines(lines)
-
-    return file_len
-
-
-
-def instrument_directory(input_dir, output_directory=None):
-    # Get a list of all .c files in the directory
-    c_files = [os.path.join(root, file)
-               for root, dirs, files in os.walk(input_dir)
-               for file in files if file.endswith('.c')]
-
-    files_to_lines = {}
-    file_lens = {}
-    main_coords = [None]*len(c_files)
-
-    # Instrument each .c file
-    for i, c_file in enumerate(c_files):
-        ftl, mc = get_instrumentation_info(c_file)
-        files_to_lines.update(ftl)
-        main_coords[i] = mc
-
-        if output_directory:
-            # Get the relative path of the c_file with respect to input_dir
-            relative_path = os.path.relpath(c_file, input_dir)
-            # Join the relative path with output_directory
-            output_file = os.path.join(output_directory, relative_path)
-            # Ensure the directory for the output file exists
-            os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        else:
-            output_file = None
-
-        file_len = instrument_file(c_file, main_coords=main_coords[i], files_to_lines=files_to_lines, output_file=output_file)
-        file_lens[c_file] = file_len
-
-    assert sum(x is not None for x in main_coords) == 1,"There should be exactly one main function."
-    construct_c_helpers(files_to_lines, file_lens, output_directory=output_directory)
-
 def normalize_filename(filename):
     """
     Normalize filename to be used as a C variable.
@@ -166,7 +95,77 @@ def normalize_filename(filename):
     return re.sub(r'[^a-zA-Z0-9_]', '_', filename)
 
 
-def construct_c_helpers(files_to_lines, file_lens, output_directory=None):
+def instrument_file(input_file, main_coords=None, files_to_lines=None, output_file=None, output_directory=None):
+    lines_to_modify = files_to_lines.get(input_file, set())
+
+    # Reading the content of the input file
+    with open(input_file, 'r') as file:
+        lines = file.readlines()
+
+    file_len = len(lines)
+
+    for ln in lines_to_modify:
+        lines[ln-1] = f"instrumentation_{normalize_filename(input_file)}[{ln-1}] += 1;{lines[ln-1].rstrip()}\n"
+
+    if main_coords != None:
+        lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{INS_PREFIX})) return EXIT_FAILURE;\n")
+
+    # Determine the path for the .h include directive
+    if output_directory:
+        include_path = f'{output_directory}/instrumentation_{INS_PREFIX}.h'
+    elif output_file:
+        include_path = os.path.join(os.path.dirname(output_file), f'instrumentation_{INS_PREFIX}.h')
+    else:
+        include_path = f'instrumentation_{INS_PREFIX}.h'
+
+        # Normalizing the paths to be relative
+    include_path = os.path.relpath(include_path, os.path.dirname(output_file or input_file))
+
+    # Including the instrumentation .h file at the top of the file
+    lines.insert(0, f'#include "{include_path}"\n')
+
+    output_file_path = output_file or input_file
+    with open(output_file_path, 'w') as file:
+        file.writelines(lines)
+
+    return file_len
+
+
+def get_instrumentation_info(input_file):
+    """
+    algorithm:
+
+    gather instrumentation information:
+    0. initialize files_to_lines = {}, after visiting: {path/file0 : set(line_to_instrument1, line_to_instrument2, ...)}
+    1. visit all the relevant nodes
+    2. for each relevant node add: files_to_lines[node.coord.file].append(node.coord.line)
+
+    instrumentation:
+    0. declare instrumentation_{filename}[num_of_lines{filename}] statically alocated variable
+    1. include funtion for writing the instrumentation information to a file
+    2. - the function will take all the instrumentation_{filename} arrays and write them to a file
+    """
+
+    ast = parse_file(input_file, use_cpp=True,
+                     cpp_path='gcc',
+                     cpp_args=['-E', r'-Ipycparser/utils/fake_libc_include'])
+
+    lv = InstrumentationVisitor()
+    lv.visit(ast)
+
+
+    main_coords = find_main_function_bodies(ast)
+    assert len(main_coords) <= 1, "There should be at most one main function."
+
+    #ast.show(showcoord=True)
+
+    print(lv.files_to_lines)
+
+    #for main_coords returns either None or the first element of the list
+    return lv.files_to_lines, next(iter(main_coords), None)
+
+
+def construct_c_helpers(files_to_lines, file_lens, output_directory=None, output_file=None, input_file=None):
     contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n#define INSTRUMENTATION_{INS_PREFIX}_H\n"
     contents_c = f"#include \"instrumentation_{INS_PREFIX}.h\"\n"
 
@@ -206,47 +205,59 @@ def construct_c_helpers(files_to_lines, file_lens, output_directory=None):
 
     contents_c += fun2
 
-    filename_prefix = os.path.join(output_directory or "", f"instrumentation_{INS_PREFIX}")
 
-    with open(f"{filename_prefix}.h", "w") as f:
+    if output_directory:
+        filename = os.path.join(output_directory, f"instrumentation_{INS_PREFIX}")
+    elif output_file:
+        filename = os.path.join(os.path.dirname(output_file), f"instrumentation_{INS_PREFIX}")
+    else:
+        filename = os.path.join(os.path.dirname(input_file), f"instrumentation_{INS_PREFIX}")
+
+    with open(f"{filename}.h", "w") as f:
         f.write(contents_h)
 
-    with open(f"{filename_prefix}.c", "w") as f:
+    with open(f"{filename}.c", "w") as f:
         f.write(contents_c)
 
     return
 
-def get_instrumentation_info(input_file):
-    """
-    algorithm:
 
-    gather instrumentation information:
-    0. initialize files_to_lines = {}, example: {path/file0 : set(line_to_instrument1, line_to_instrument2, ...)}
-    1. visit all the relevant nodes
-    2. for each relevant node add: files_to_lines[node.coord.file].append(node.coord.line)
+def instrument_files(input_path, output_directory=None, output_file=None):
+    # Determine if the input is a file or directory
+    if os.path.isfile(input_path):
+        c_files = [input_path]
+    else:
+        c_files = [os.path.join(root, file)
+                   for root, dirs, files in os.walk(input_path)
+                   for file in files if file.endswith('.c')]
 
-    instrumentation:
-    0. declare instrumentation_{filename}[num_of_lines{filename}] statically alocated variable
-    1. include funtion for writing the instrumentation information to a file
-    2. - the function will take all the instrumentation_{filename} arrays and write them to a file
-    """
+    files_to_lines = {}
+    file_lens = {}
+    main_coords = [None] * len(c_files)
 
-    ast = parse_file(input_file, use_cpp=True,
-                     cpp_path='gcc',
-                     cpp_args=['-E', r'-Ipycparser/utils/fake_libc_include'])
+    # Instrument each .c file
+    # - we must do so because even though we run the preprocessor on all
+    #   the files, the .c files are not aware of each other
+    for i, c_file in enumerate(c_files):
+        ftl, mc = get_instrumentation_info(c_file)
+        files_to_lines.update(ftl)
+        main_coords[i] = mc
 
-    lv = InstrumentationVisitor()
-    lv.visit(ast)
+        if output_directory:
+            output_file = os.path.join(output_directory, os.path.basename(c_file))
+            os.makedirs(output_directory, exist_ok=True)
+        else:
+            output_file = None
 
+        file_len = instrument_file(c_file, main_coords=main_coords[i], files_to_lines=files_to_lines,
+                                   output_file=output_file, output_directory=output_directory)
+        file_lens[c_file] = file_len
 
-    main_coords = find_main_function_bodies(ast)
-    assert len(main_coords) <= 1, "There should be at most one main function."
+    assert sum(x is not None for x in main_coords) == 1, "There should be exactly one main function."
 
-    #ast.show(showcoord=True)
+    construct_c_helpers(files_to_lines, file_lens, output_directory=output_directory,
+                        output_file=output_file, input_file=input_path)
 
-    print(lv.files_to_lines)
-
-    return lv.files_to_lines, next(iter(main_coords), None)
 
 
 def main():
@@ -263,18 +274,20 @@ def main():
 
     if args.input_file:
         if args.output_file:
-            instrument_file(args.input_file, args.output_file)
+            instrument_files(args.input_file, args.output_file)
         else:
             print("Warning: No output file specified. The input file will be modified in-place.")
-            instrument_file(args.input_file)
+            instrument_files(args.input_file)
 
     elif args.input_dir:
         try:
             if args.output_dir:
-                instrument_directory(args.input_dir, args.output_dir)
+                instrument_files(args.input_dir, args.output_dir)
+            elif args.output_file:
+                raise ValueError("Error: Cannot specify an input directory and an output file.")
             else:
                 print(f"Warning: No output dir specified. The dir {args.output_dir} will be modified in-place.")
-                instrument_directory(args.input_dir)
+                instrument_files(args.input_dir)
         except ValueError as e:
             print(f"Error: {e}")
 
@@ -282,3 +295,16 @@ def main():
 if __name__ == '__main__':
     main()
 
+
+"""
+TODO:
+1. unify the output path - handle the case of output file and output dir (and input file) in unified way
+2. we need to write the .c and .h helpers to correct destination for all combinations
+  a. only input file
+  b. output file
+  c. output dir
+3. parse the output of the run of the instrumented code
+4. create lcov report
+
+
+"""
