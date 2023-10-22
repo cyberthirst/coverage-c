@@ -96,7 +96,7 @@ def normalize_filename(filename):
     return re.sub(r'[^a-zA-Z0-9_]', '_', filename)
 
 
-def instrument_file(input_file, main_coords=None, files_to_lines=None, output_file=None, output_directory=None):
+def instrument_file(input_file, root, main_coords, files_to_lines):
     lines_to_modify = files_to_lines.get(input_file, set())
 
     # Reading the content of the input file
@@ -111,21 +111,15 @@ def instrument_file(input_file, main_coords=None, files_to_lines=None, output_fi
     if main_coords != None:
         lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{INS_PREFIX})) return EXIT_FAILURE;\n")
 
-    # Determine the path for the .h include directive
-    if output_directory:
-        include_path = f'{output_directory}/instrumentation_{INS_PREFIX}.h'
-    elif output_file:
-        include_path = os.path.join(os.path.dirname(output_file), f'instrumentation_{INS_PREFIX}.h')
-    else:
-        include_path = f'instrumentation_{INS_PREFIX}.h'
-
-        # Normalizing the paths to be relative
-    include_path = os.path.relpath(include_path, os.path.dirname(output_file or input_file))
+    include_path = f'instrumentation_{INS_PREFIX}.h'
+    input_file_dir = os.path.dirname(input_file)
+    # normalizing the paths to be relative
+    include_path = os.path.join(os.path.relpath(root, start=input_file_dir), include_path)
 
     # Including the instrumentation .h file at the top of the file
     lines.insert(0, f'#include "{include_path}"\n')
 
-    output_file_path = output_file or input_file
+    output_file_path = input_file
     with open(output_file_path, 'w') as file:
         file.writelines(lines)
 
@@ -166,7 +160,7 @@ def get_instrumentation_info(input_file):
     return lv.files_to_lines, next(iter(main_coords), None)
 
 
-def construct_c_helpers(files_to_lines, file_lens, output_directory=None, output_file=None, input_file=None):
+def construct_c_helpers(files_to_lines, file_lens, path):
     contents_h = f"#ifndef INSTRUMENTATION_{INS_PREFIX}_H\n#define INSTRUMENTATION_{INS_PREFIX}_H\n"
     contents_h += "#include<stdio.h>\n"
     contents_h += "#include<stdlib.h>\n\n"
@@ -209,14 +203,8 @@ void write_file_instrumentation_info(char* file, int* arr, int len) {
 
     contents_c += fun2
 
-
-    if output_directory:
-        filename = os.path.join(output_directory, f"instrumentation_{INS_PREFIX}")
-    elif output_file:
-        filename = os.path.join(os.path.dirname(output_file), f"instrumentation_{INS_PREFIX}")
-    else:
-        filename = os.path.join(os.path.dirname(input_file), f"instrumentation_{INS_PREFIX}")
-
+    output_directory = path if os.path.isdir(path) else os.path.dirname(path)
+    filename = os.path.join(output_directory, f"instrumentation_{INS_PREFIX}")
     with open(f"{filename}.h", "w") as f:
         f.write(contents_h)
 
@@ -226,13 +214,15 @@ void write_file_instrumentation_info(char* file, int* arr, int len) {
     return
 
 
-def instrument_files(input_path, output_directory=None, output_file=None):
+def instrument_files(path):
     # Determine if the input is a file or directory
-    if os.path.isfile(input_path):
-        c_files = [input_path]
+    if os.path.isfile(path):
+        root = os.path.dirname(path)
+        c_files = [path]
     else:
+        root = path
         c_files = [os.path.join(root, file)
-                   for root, dirs, files in os.walk(input_path)
+                   for root, dirs, files in os.walk(path)
                    for file in files if file.endswith('.c')]
 
     files_to_lines = {}
@@ -247,20 +237,12 @@ def instrument_files(input_path, output_directory=None, output_file=None):
         files_to_lines.update(ftl)
         main_coords[i] = mc
 
-        if output_directory:
-            output_file = os.path.join(output_directory, os.path.basename(c_file))
-            os.makedirs(output_directory, exist_ok=True)
-        else:
-            output_file = None
-
-        file_len = instrument_file(c_file, main_coords=main_coords[i], files_to_lines=files_to_lines,
-                                   output_file=output_file, output_directory=output_directory)
+        file_len = instrument_file(c_file, root, main_coords[i], files_to_lines)
         file_lens[c_file] = file_len
 
     assert sum(x is not None for x in main_coords) == 1, "There should be exactly one main function."
 
-    construct_c_helpers(files_to_lines, file_lens, output_directory=output_directory,
-                        output_file=output_file, input_file=input_path)
+    construct_c_helpers(files_to_lines, file_lens, path)
 
 
 def copy_tree(src_dir, dst_dir):
@@ -329,10 +311,10 @@ def main():
 
     args = parser.parse_args()
 
-    to_process = preprocess_files(args)
+    path = preprocess_files(args)
 
-    if to_process:  # Check if preprocessing was successful
-        instrument_files(to_process)
+    if path:
+        instrument_files(path)
 
 
 if __name__ == '__main__':
