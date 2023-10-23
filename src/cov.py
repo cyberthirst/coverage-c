@@ -3,6 +3,7 @@ import os
 import argparse
 import shutil
 import subprocess
+from dataclasses import dataclass
 
 
 from pycparser import parse_file
@@ -35,34 +36,47 @@ class MinColVisitor(NodeVisitor):
 
 class InstrumentationVisitor(NodeVisitor):
     def __init__(self):
-        self.files_to_lines = {}
+        self.instrumentation_info = {}
         self.min_col_visitor = MinColVisitor()
 
     def _get_min_col(self, node):
         return self.min_col_visitor.get_min_col(node)
 
-    def add_line(self, node):
-        if node.coord.file not in self.files_to_lines:
-            self.files_to_lines[node.coord.file] = set()
-        self.files_to_lines[node.coord.file].add(node.coord.line)
+    def _add_info(self, node):
+        line = node.coord.line
+        col = self._get_min_col(node)
+        if line not in self.instrumentation_info:
+            self.instrumentation_info[line] = set()
+        self.instrumentation_info[line].add(col)
         print(f"coordinates: {node.coord}")
 
+    def get_instrumentation_info(self):
+        for line in self.instrumentation_info.keys():
+            #update to point to the minimal column
+            self.instrumentation_info[line] = min(self.instrumentation_info[line])
+        return self.instrumentation_info
+
     def visit_FuncCall(self, node):
-        self.add_line(node)
+        self._add_info(node)
         self.generic_visit(node)
 
     def visit_Return(self, node):
-        self.add_line(node)
+        self._add_info(node)
         self.generic_visit(node)
 
     def visit_Decl(self, node):
-        self.add_line(node)
+        self._add_info(node)
         print(f"min col: {self._get_min_col(node)}")
         self.generic_visit(node)
 
     def visit_Assignment(self, node):
-        self.add_line(node)
+        self._add_info(node)
         self.generic_visit(node)
+
+    def visit_For(self, node):
+        #we don't care about the for loop header, the declarations in the header
+        # would cause us to instrument the header, so we intentionally skip it
+        self.generic_visit(node.stmt)
 
 
     def generic_visit(self, node):
@@ -101,17 +115,17 @@ def normalize_filename(filename):
     return re.sub(r'[^a-zA-Z0-9_]', '_', filename)
 
 
-def instrument_file(input_file, root, main_coords, files_to_lines):
-    lines_to_modify = files_to_lines.get(input_file, set())
-
-    # Reading the content of the input file
+def instrument_file(input_file, root, main_coords, instrumentation_info):
     with open(input_file, 'r') as file:
         lines = file.readlines()
 
     file_len = len(lines)
 
-    for ln in lines_to_modify:
-        lines[ln-1] = f"instrumentation_{normalize_filename(input_file)}[{ln-1}] += 1;{lines[ln-1].rstrip()}\n"
+    for line, col in instrumentation_info.items():
+        line_index = line - 1
+        col_index = col - 1
+        instr_text = f"instrumentation_{normalize_filename(input_file)}[{line_index}] += 1;"
+        lines[line_index] = lines[line_index][:col_index] + instr_text + lines[line_index][col_index:]
 
     if main_coords != None:
         lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{HASH})) return EXIT_FAILURE;\n")
@@ -162,19 +176,19 @@ def get_instrumentation_info(input_file):
 
     #ast.show(showcoord=True)
 
-    print(lv.files_to_lines)
+    print(lv.instrumentation_info)
 
     #for main_coords returns either None or the first element of the list
-    return lv.files_to_lines, next(iter(main_coords), None)
+    return lv.get_instrumentation_info(), next(iter(main_coords), None)
 
 
-def construct_c_helpers(files_to_lines, file_lens, path):
+def construct_c_helpers(c_files, file_lens, path):
     contents_h = f"#ifndef INSTRUMENTATION_{HASH}_H\n#define INSTRUMENTATION_{HASH}_H\n"
     contents_h += "#include<stdio.h>\n"
     contents_h += "#include<stdlib.h>\n\n"
     contents_c = f"#include \"instrumentation_{HASH}.h\"\n"
 
-    for file  in files_to_lines.keys():
+    for file in c_files:
         contents_h += f"int instrumentation_{normalize_filename(file)}[{file_lens[file]}];\n"
 
     contents_h += f"void write_file_instrumentation_info_{HASH}(char* file, int* arr, int len);\n"
@@ -206,7 +220,7 @@ void write_file_instrumentation_info_{HASH}(char* file, int* arr, int len) {{
     contents_c += fun1
 
     fun2 = f"void write_instrumentation_info_{HASH}() {{\n"
-    for file in files_to_lines.keys():
+    for file in c_files:
         normalized = normalize_filename(file)
         fun2 += f"  write_file_instrumentation_info_{HASH}(\"{file}\", instrumentation_{normalized}, {file_lens[file]});\n"
     fun2 += "}\n"
@@ -234,7 +248,6 @@ def instrument_files(path):
                    for root, dirs, files in os.walk(path)
                    for file in files if file.endswith('.c')]
 
-    files_to_lines = {}
     file_lens = {}
     main_coords = [None] * len(c_files)
 
@@ -242,16 +255,15 @@ def instrument_files(path):
     # - we must do so because even though we run the preprocessor on all
     #   the files, the .c files are not aware of each other
     for i, c_file in enumerate(c_files):
-        ftl, mc = get_instrumentation_info(c_file)
-        files_to_lines.update(ftl)
+        instrumentation_info, mc = get_instrumentation_info(c_file)
         main_coords[i] = mc
 
-        file_len = instrument_file(c_file, root, main_coords[i], files_to_lines)
+        file_len = instrument_file(c_file, root, main_coords[i], instrumentation_info)
         file_lens[c_file] = file_len
 
     assert sum(x is not None for x in main_coords) == 1, "There should be exactly one main function."
 
-    return files_to_lines, file_lens
+    return c_files, file_lens
 
 
 def copy_tree(src_dir, dst_dir):
@@ -394,10 +406,9 @@ def main():
     if not path:
         return
 
-    files_to_lines, file_lens = instrument_files(path)
+    c_files, file_lens = instrument_files(path)
     #we need to gather all the relevant .c files to perform compilation
-    c_files = [construct_c_helpers(files_to_lines, file_lens, path)]
-    c_files.extend(files_to_lines.keys())
+    c_files.append(construct_c_helpers(c_files, file_lens, path))
 
     output_path = path if os.path.isdir(path) else os.path.dirname(path)
 
