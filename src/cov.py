@@ -110,10 +110,10 @@ def instrument_file(input_file, root, main_coords, instrumentation_info):
         line_index = line - 1
         col_index = col - 1
         instr_text = f"instrumentation_{normalize_filename(input_file)}[{line_index}] += 1;"
-        lines[line_index] = lines[line_index][:col_index] + instr_text + lines[line_index][col_index:]
+        lines[line_index] = lines[line_index][:col_index-1] + instr_text + lines[line_index][col_index-1:]
 
     if main_coords != None:
-        lines.insert(main_coords.line, f"if (atexit(write_instrumentation_info_{HASH})) return EXIT_FAILURE;\n")
+        lines.insert(main_coords.line, f"   if (atexit(write_instrumentation_info_{HASH})) return EXIT_FAILURE;\n")
 
     include_path = f'instrumentation_{HASH}.h'
     input_file_dir = os.path.dirname(input_file)
@@ -227,7 +227,6 @@ def instrument_files(path):
     for i, c_file in enumerate(c_files):
         instrumentation_info, mc = get_instrumentation_info(c_file)
         file_to_lf[c_file] = len(instrumentation_info)
-        print(f"c_file in instrument_files: {c_file}")
         main_coords[i] = mc
 
         file_len = instrument_file(c_file, root, main_coords[i], instrumentation_info)
@@ -272,7 +271,7 @@ def preprocess_files(args):
         assert not os.path.isdir(args.input_file), "Provided input file is a directory!"
         source_dir = os.path.dirname(args.input_file)
         if args.output_file:
-            file_translation[args.output_file] = args.input_file
+            file_translation[args.output_file] = os.path.basename(args.input_file)
             shutil.copy2(args.input_file, args.output_file)
             path_to_process = args.output_file
 
@@ -361,11 +360,11 @@ def convert_to_lcov(source_dir, output_path, file_to_lf, file_translation):
                         outfile.write(f"DA:{i + 1},{hits}\n")
 
                 lh = sum(1 for hits in coverage_data if int(hits) > 0)
-                print(f"file_path in convert_to_lcov: {file_path}")
                 lf = file_to_lf[file_path]
                 outfile.write(f"LH:{lh}\n")
                 outfile.write(f"LF:{lf}\n")
                 outfile.write("end_of_record\n")
+    print(f"The coverage report is available at: {output_file}")
 
 
 def main():
@@ -389,7 +388,9 @@ def main():
         return
 
     c_files, file_lens, file_to_lf = instrument_files(path)
-    #we need to gather all the relevant .c files to perform compilation
+    # we need to gather all the relevant .c files to perform compilation, this includes
+    # the helper .c file which includes the definitions of functions for writing the coverage
+    # info to the file
     c_files.append(construct_c_helpers(c_files, file_lens, path))
 
     output_path = path if os.path.isdir(path) else os.path.dirname(path)
