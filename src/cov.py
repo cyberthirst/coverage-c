@@ -18,7 +18,7 @@ HASH = "98b30b1e82017f82d4388ed4555f8f7c4053e3d1f456b1baf24e402e015a0f21"[:8]
 # why?
 # - int y = x + 1;
 # - this declarations has in the coordinates column 5 (and not 1)
-# - little wierdness of the pycparser library
+# - little weirdness of the pycparser library
 class MinColVisitor(NodeVisitor):
     def __init__(self):
         self.min = None
@@ -42,13 +42,13 @@ class InstrumentationVisitor(NodeVisitor):
     def _get_min_col(self, node):
         return self.min_col_visitor.get_min_col(node)
 
-    def _add_info(self, node):
+    def _add_info(self, node, col=None):
         line = node.coord.line
-        col = self._get_min_col(node)
+        if not col:
+            col = self._get_min_col(node)
         if line not in self.instrumentation_info:
             self.instrumentation_info[line] = set()
         self.instrumentation_info[line].add(col)
-        print(f"coordinates: {node.coord}")
 
     def get_instrumentation_info(self):
         for line in self.instrumentation_info.keys():
@@ -66,7 +66,6 @@ class InstrumentationVisitor(NodeVisitor):
 
     def visit_Decl(self, node):
         self._add_info(node)
-        print(f"min col: {self._get_min_col(node)}")
         self.generic_visit(node)
 
     def visit_Assignment(self, node):
@@ -74,9 +73,14 @@ class InstrumentationVisitor(NodeVisitor):
         self.generic_visit(node)
 
     def visit_For(self, node):
+        self._add_info(node, node.coord.column)
         #we don't care about the for loop header, the declarations in the header
         # would cause us to instrument the header, so we intentionally skip it
         self.generic_visit(node.stmt)
+
+    def visit_If(self, node):
+        self._add_info(node, node.coord.column)
+        self.generic_visit(node)
 
 
     def generic_visit(self, node):
@@ -168,15 +172,12 @@ def get_instrumentation_info(input_file):
     #visit only the bodies of the function definitions
     for node in ast.ext:
         if isinstance(node, FuncDef):
-            print(f"function name: {node.decl.name}")
             lv.visit(node.body)
 
     main_coords = find_main_function_bodies(ast)
     assert len(main_coords) <= 1, "There should be at most one main function."
 
     #ast.show(showcoord=True)
-
-    print(lv.instrumentation_info)
 
     #for main_coords returns either None or the first element of the list
     return lv.get_instrumentation_info(), next(iter(main_coords), None)
@@ -200,7 +201,6 @@ def construct_c_helpers(c_files, file_lens, path):
     # <file_name1>:arr1[0],arr1[1],...,arr1[len(arr1)-1]
     # <file_name2>:arr2[0],arr2[1],...,arr2[len(arr2)-1]
     output_directory = path if os.path.isdir(path) else os.path.dirname(path)
-    print(f"output directory: {output_directory}")
     fun1 = f"""
 void write_file_instrumentation_info_{HASH}(char* file, int* arr, int len) {{
     FILE* f = fopen("instrumentation_info_{HASH}.txt", "a");
@@ -249,6 +249,7 @@ def instrument_files(path):
                    for file in files if file.endswith('.c')]
 
     file_lens = {}
+    file_to_lf = {}
     main_coords = [None] * len(c_files)
 
     # Instrument each .c file
@@ -256,6 +257,8 @@ def instrument_files(path):
     #   the files, the .c files are not aware of each other
     for i, c_file in enumerate(c_files):
         instrumentation_info, mc = get_instrumentation_info(c_file)
+        file_to_lf[c_file] = len(instrumentation_info)
+        print(f"c_file in instrument_files: {c_file}")
         main_coords[i] = mc
 
         file_len = instrument_file(c_file, root, main_coords[i], instrumentation_info)
@@ -263,7 +266,7 @@ def instrument_files(path):
 
     assert sum(x is not None for x in main_coords) == 1, "There should be exactly one main function."
 
-    return c_files, file_lens
+    return c_files, file_lens, file_to_lf
 
 
 def copy_tree(src_dir, dst_dir):
@@ -287,7 +290,6 @@ def preprocess_files(args):
     path_to_process = None
     #save source_dir, we will write there the lcov.info file later
     source_dir = None
-    print(f"args.input_file: {args.input_file}")
     if args.input_file:
         assert not os.path.isdir(args.input_file), "Provided input file is a directory!"
         source_dir = os.path.dirname(args.input_file)
@@ -359,9 +361,8 @@ def compile_and_run(c_files, output_path, executable_args=[], executable_name=f"
     os.chdir(original_working_directory)
 
 
-def convert_to_lcov(source_dir, output_path):
+def convert_to_lcov(source_dir, output_path, file_to_lf):
     input_file = os.path.join(output_path, f"instrumentation_info_{HASH}.txt")
-    print(f"input_file: {input_file}")
     output_file = os.path.join(source_dir, "lcov.info")
 
     with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
@@ -369,21 +370,23 @@ def convert_to_lcov(source_dir, output_path):
 
         for line in lines:
             file_path, coverage_info = line.strip().split(":")
-            file_path = file_path.replace(output_path, '', 1).lstrip('/')
+            file_path_normalized = file_path.replace(output_path, '', 1).lstrip('/')
             coverage_data = coverage_info.split(',')
 
-            outfile.write(f"TN:test\n")
-            outfile.write(f"SF:{file_path}\n")
+            if any(int(hits) > 0 for hits in coverage_data):
+                outfile.write(f"TN:test\n")
+                outfile.write(f"SF:{file_path_normalized}\n")
 
-            for i, hits in enumerate(coverage_data):
-                outfile.write(f"DA:{i + 1},{hits}\n")
+                for i, hits in enumerate(coverage_data):
+                    if int(hits) > 0:  # Write only lines with non-zero hits
+                        outfile.write(f"DA:{i + 1},{hits}\n")
 
-            lh = sum(1 for hits in coverage_data if int(hits) > 0)
-            lf = len(coverage_data)
-            outfile.write(f"LH:{lh}\n")
-            outfile.write(f"LF:{lf}\n")
-
-            outfile.write("end_of_record\n")
+                lh = sum(1 for hits in coverage_data if int(hits) > 0)
+                print(f"file_path in convert_to_lcov: {file_path}")
+                lf = file_to_lf[file_path]
+                outfile.write(f"LH:{lh}\n")
+                outfile.write(f"LF:{lf}\n")
+                outfile.write("end_of_record\n")
 
 
 def main():
@@ -406,7 +409,7 @@ def main():
     if not path:
         return
 
-    c_files, file_lens = instrument_files(path)
+    c_files, file_lens, file_to_lf = instrument_files(path)
     #we need to gather all the relevant .c files to perform compilation
     c_files.append(construct_c_helpers(c_files, file_lens, path))
 
@@ -414,7 +417,7 @@ def main():
 
     compile_and_run(c_files, output_path, args.input_args)
 
-    convert_to_lcov(source_dir, output_path)
+    convert_to_lcov(source_dir, output_path, file_to_lf)
 
 
 if __name__ == '__main__':
