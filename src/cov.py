@@ -6,22 +6,46 @@ import subprocess
 
 
 from pycparser import parse_file
-from pycparser.c_ast import NodeVisitor
+from pycparser.c_ast import NodeVisitor, FuncDef
 
 #keccak256("instrumentation-skrabmir")
 # - used to avoid name collissions with the instrumented code
 HASH = "98b30b1e82017f82d4388ed4555f8f7c4053e3d1f456b1baf24e402e015a0f21"[:8]
 
+
+#finds (recursively) the minimal column for the provided node
+# why?
+# - int y = x + 1;
+# - this declarations has in the coordinates column 5 (and not 1)
+# - little wierdness of the pycparser library
+class MinColVisitor(NodeVisitor):
+    def __init__(self):
+        self.min = None
+
+    def generic_visit(self, node):
+        for child_name, child in node.children():
+            self.min = min(self.min, child.coord.column)
+            self.visit(child)
+
+    def get_min_col(self, node):
+        self.min = node.coord.column
+        self.visit(node)
+        return self.min
+
+
 class InstrumentationVisitor(NodeVisitor):
     def __init__(self):
         self.files_to_lines = {}
-        self.main_def_line = None
-        self.inside_fun = False
+        self.min_col_visitor = MinColVisitor()
+
+    def _get_min_col(self, node):
+        return self.min_col_visitor.get_min_col(node)
 
     def add_line(self, node):
         if node.coord.file not in self.files_to_lines:
             self.files_to_lines[node.coord.file] = set()
         self.files_to_lines[node.coord.file].add(node.coord.line)
+        print(f"coordinates: {node.coord}")
 
     def visit_FuncCall(self, node):
         self.add_line(node)
@@ -31,32 +55,12 @@ class InstrumentationVisitor(NodeVisitor):
         self.add_line(node)
         self.generic_visit(node)
 
-    """
-    def visit_FuncDef(self, node):
-        #name = getattr(node, 'name', None)
-        self.inside_fun = True
-        self.generic_visit(node)
-        self.inside_fun = False
-
-
-    def visit_FuncDecl(self, node):
-        if self.inside_fun:
-           self.generic_visit(node)
-        else:
-            self.inside_fun = True
-            self.generic_visit(node)
-            self.inside_fun = False
-
-    def visit_Compound(self, node):
+    def visit_Decl(self, node):
         self.add_line(node)
+        print(f"min col: {self._get_min_col(node)}")
         self.generic_visit(node)
-    """
 
     def visit_Assignment(self, node):
-        self.add_line(node)
-        self.generic_visit(node)
-
-    def visit_BinaryOp(self, node):
         self.add_line(node)
         self.generic_visit(node)
 
@@ -147,8 +151,11 @@ def get_instrumentation_info(input_file):
                      cpp_args=['-E', r'-Ipycparser/utils/fake_libc_include'])
 
     lv = InstrumentationVisitor()
-    lv.visit(ast)
-
+    #visit only the bodies of the function definitions
+    for node in ast.ext:
+        if isinstance(node, FuncDef):
+            print(f"function name: {node.decl.name}")
+            lv.visit(node.body)
 
     main_coords = find_main_function_bodies(ast)
     assert len(main_coords) <= 1, "There should be at most one main function."
