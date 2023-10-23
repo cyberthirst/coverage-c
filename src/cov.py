@@ -2,6 +2,7 @@ import re
 import os
 import argparse
 import shutil
+import subprocess
 
 
 from pycparser import parse_file
@@ -260,49 +261,53 @@ def copy_tree(src_dir, dst_dir):
             shutil.copy2(src_item, dst_item)
 
 
-#prepares the output files/direcotory
-# copies the inputs to output
-#then the output files will be modified in place
+#prepares the output files/directory and copies the inputs to them
+# - later the output files will be modified in place
+# - if only input_file (or input_dir) they are not copied and will be modified in place
 def preprocess_files(args):
-    source_path = None
-
+    path_to_process = None
+    #save source_dir, we will write there the lcov.info file later
+    source_dir = None
+    print(f"args.input_file: {args.input_file}")
     if args.input_file:
+        assert not os.path.isdir(args.input_file), "Provided input file is a directory!"
+        source_dir = os.path.dirname(args.input_file)
         if args.output_file:
             shutil.copy2(args.input_file, args.output_file)
-            source_path = args.output_file
+            path_to_process = args.output_file
 
         elif args.output_dir:
             output_file_path = os.path.join(args.output_dir, os.path.basename(args.input_file))
             shutil.copy2(args.input_file, output_file_path)
-            source_path = output_file_path
+            path_to_process = output_file_path
 
         else:
             print("Warning: No output file or dir specified. The input file will be modified in-place.")
-            source_path = args.input_file
+            path_to_process = args.input_file
 
     elif args.input_dir:
+        assert os.path.isdir(args.input_dir), "Provided input directory is not a directory!"
+        source_dir = args.input_dir
         try:
             if args.output_file:
                 raise ValueError("Error: Cannot specify an input directory and an output file.")
             elif args.output_dir:
                 # No longer removing the output directory, instead merging contents
                 copy_tree(args.input_dir, args.output_dir)
-                source_path = args.output_dir
+                path_to_process = args.output_dir
             else:
                 print(f"Warning: No output dir specified. The dir {args.input_dir} will be modified in-place.")
-                source_path = args.input_dir
+                path_to_process = args.input_dir
 
         except ValueError as e:
             print(f"Error: {e}")
             return None
 
-    return source_path
+    return source_dir, path_to_process
 
 
-import subprocess
 
-
-def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
+def compile_and_run(c_files, output_path, executable_args=[], executable_name=f"a.out_{HASH}"):
     # full path to the output executable
     executable_path = os.path.join(output_path, executable_name)
 
@@ -321,7 +326,8 @@ def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
     original_working_directory = os.getcwd()
     os.chdir(output_path)
 
-    process = subprocess.Popen([f"./{executable_name}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    command = [f"./{executable_name}"] + executable_args
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = process.communicate()
 
     print("Output from the executable:")
@@ -334,10 +340,10 @@ def compile_and_run(c_files, output_path, executable_name=f"a.out_{HASH}"):
     os.chdir(original_working_directory)
 
 
-def convert_to_lcov(output_path):
+def convert_to_lcov(source_dir, output_path):
     input_file = os.path.join(output_path, f"instrumentation_info_{HASH}.txt")
     print(f"input_file: {input_file}")
-    output_file = os.path.join(output_path, "lcov.info")
+    output_file = os.path.join(source_dir, "lcov.info")
 
     with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
         lines = infile.readlines()
@@ -371,22 +377,26 @@ def main():
     parser.add_argument('-D', '--output-dir', help='specifies the output directory for instrumented C files')
     parser.add_argument('-F', '--output-file', help='specifies the output file for the instrumented C file')
 
+    parser.add_argument('-i', '--input-args', nargs='*', default=[],
+                        help='specifies input arguments to be passed to the C binary during execution')
+
     args = parser.parse_args()
 
-    path = preprocess_files(args)
+    source_dir, path = preprocess_files(args)
 
     if not path:
         return
 
     files_to_lines, file_lens = instrument_files(path)
+    #we need to gather all the relevant .c files to perform compilation
     c_files = [construct_c_helpers(files_to_lines, file_lens, path)]
     c_files.extend(files_to_lines.keys())
 
     output_path = path if os.path.isdir(path) else os.path.dirname(path)
 
-    compile_and_run(c_files, output_path)
+    compile_and_run(c_files, output_path, args.input_args)
 
-    convert_to_lcov(output_path)
+    convert_to_lcov(source_dir, output_path)
 
 
 if __name__ == '__main__':
