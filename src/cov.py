@@ -91,25 +91,6 @@ class InstrumentationVisitor(NodeVisitor):
             self.visit(child)
 
 
-class MainFunctionVisitor(NodeVisitor):
-    def __init__(self):
-        self.main_body_coords = []
-
-    def visit_FuncDef(self, node):
-        function_name = node.decl.name
-        if function_name == "main":
-            compound_node = node.body
-            coords = compound_node.coord
-            self.main_body_coords.append(coords)
-        self.generic_visit(node)
-
-
-def find_main_function_bodies(ast_root):
-    visitor = MainFunctionVisitor()
-    visitor.visit(ast_root)
-    return visitor.main_body_coords
-
-
 def normalize_filename(filename):
     """
     Normalize filename to be used as a C variable.
@@ -150,31 +131,19 @@ def instrument_file(input_file, root, main_coords, instrumentation_info):
 
 
 def get_instrumentation_info(input_file):
-    """
-    algorithm:
-
-    gather instrumentation information:
-    0. initialize files_to_lines = {}, after visiting: {path/file0 : set(line_to_instrument1, line_to_instrument2, ...)}
-    1. visit all the relevant nodes
-    2. for each relevant node add: files_to_lines[node.coord.file].append(node.coord.line)
-
-    instrumentation:
-    0. declare instrumentation_{filename}[num_of_lines{filename}] statically alocated variable
-    1. include funtion for writing the instrumentation information to a file
-    2. - the function will take all the instrumentation_{filename} arrays and write them to a file
-    """
-
     ast = parse_file(input_file, use_cpp=True,
                      cpp_path='gcc',
                      cpp_args=['-E', r'-Ipycparser/utils/fake_libc_include'])
 
     lv = InstrumentationVisitor()
+    main_coords = []
     #visit only the bodies of the function definitions
     for node in ast.ext:
         if isinstance(node, FuncDef):
             lv.visit(node.body)
+            if node.decl.name == "main":
+                main_coords.append(node.body.coord)
 
-    main_coords = find_main_function_bodies(ast)
     assert len(main_coords) <= 1, "There should be at most one main function."
 
     #ast.show(showcoord=True)
@@ -198,8 +167,8 @@ def construct_c_helpers(c_files, file_lens, path):
     contents_h += "#endif\n"
 
     #instrumentation_inf.txt will have the following format:
-    # <file_name1>:arr1[0],arr1[1],...,arr1[len(arr1)-1]
-    # <file_name2>:arr2[0],arr2[1],...,arr2[len(arr2)-1]
+    # file_name1:arr1[0],arr1[1],...,arr1[len(arr1)-1]
+    # file_name2:arr2[0],arr2[1],...,arr2[len(arr2)-1]
     output_directory = path if os.path.isdir(path) else os.path.dirname(path)
     fun1 = f"""
 void write_file_instrumentation_info_{HASH}(char* file, int* arr, int len) {{
@@ -287,6 +256,15 @@ def copy_tree(src_dir, dst_dir):
 # - later the output files will be modified in place
 # - if only input_file (or input_dir) they are not copied and will be modified in place
 def preprocess_files(args):
+    #if input and output files are given by the user, then this technique of
+    # copying files and modifying them in-place runs into the following problem:
+    #  - we generate the lcov.info based on the target paths, however we place
+    #    it to the origin destination
+    #  - the lcof.info contains the SF attribute, which starts a section for one given C file
+    #    and we generate it based on the target path and thus there will be a discrepancy
+    #    between the origin name and the actual C file that being "coveraged"
+    #  - thus we use the translation dict
+    file_translation = {}
     path_to_process = None
     #save source_dir, we will write there the lcov.info file later
     source_dir = None
@@ -294,6 +272,7 @@ def preprocess_files(args):
         assert not os.path.isdir(args.input_file), "Provided input file is a directory!"
         source_dir = os.path.dirname(args.input_file)
         if args.output_file:
+            file_translation[args.output_file] = args.input_file
             shutil.copy2(args.input_file, args.output_file)
             path_to_process = args.output_file
 
@@ -324,7 +303,7 @@ def preprocess_files(args):
             print(f"Error: {e}")
             return None
 
-    return source_dir, path_to_process
+    return source_dir, path_to_process, file_translation
 
 
 
@@ -361,7 +340,7 @@ def compile_and_run(c_files, output_path, executable_args=[], executable_name=f"
     os.chdir(original_working_directory)
 
 
-def convert_to_lcov(source_dir, output_path, file_to_lf):
+def convert_to_lcov(source_dir, output_path, file_to_lf, file_translation):
     input_file = os.path.join(output_path, f"instrumentation_info_{HASH}.txt")
     output_file = os.path.join(source_dir, "lcov.info")
 
@@ -370,7 +349,7 @@ def convert_to_lcov(source_dir, output_path, file_to_lf):
 
         for line in lines:
             file_path, coverage_info = line.strip().split(":")
-            file_path_normalized = file_path.replace(output_path, '', 1).lstrip('/')
+            file_path_normalized = file_path.replace(output_path, '', 1).lstrip('/') if not file_translation else file_translation[file_path]
             coverage_data = coverage_info.split(',')
 
             if any(int(hits) > 0 for hits in coverage_data):
@@ -404,7 +383,7 @@ def main():
 
     args = parser.parse_args()
 
-    source_dir, path = preprocess_files(args)
+    source_dir, path, file_translation = preprocess_files(args)
 
     if not path:
         return
@@ -417,7 +396,7 @@ def main():
 
     compile_and_run(c_files, output_path, args.input_args)
 
-    convert_to_lcov(source_dir, output_path, file_to_lf)
+    convert_to_lcov(source_dir, output_path, file_to_lf, file_translation)
 
 
 if __name__ == '__main__':
