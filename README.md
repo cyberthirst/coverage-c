@@ -37,6 +37,9 @@ Options:
  - [ ] The code is tested 
  - [ ] Benchmark
 
+# Testing
+- the script currently lacks proper testing
+- we provide 3 very basic `C` test suites in `src/c_files` that can be used to see how the coverage work
 # Known issues
 - line coverage is limited, if we have multiple statements on one line, then the coverage displayed is for the 1st statement
 - we don't support condition or branch coverage

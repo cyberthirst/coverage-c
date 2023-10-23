@@ -133,7 +133,7 @@ def instrument_file(input_file, root, main_coords, instrumentation_info):
 def get_instrumentation_info(input_file):
     ast = parse_file(input_file, use_cpp=True,
                      cpp_path='gcc',
-                     cpp_args=['-E', r'-Ipycparser/utils/fake_libc_include'])
+                     cpp_args=['-E', r'-Ifake_libc_include'])
 
     lv = InstrumentationVisitor()
     main_coords = []

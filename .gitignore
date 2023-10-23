@@ -1,2 +1,4 @@
-pycparser/
 .idea
+pycparser/
+*.lcov.info
+
