@@ -5,6 +5,9 @@
 
 ### Install dependencies
 1. `pip install pycparser`
+2. `pip install pytest`
+3. `pip install pytest-cov`
+4. TODO requirements.txt
 
 # Usage
 - Usage: `python src/cov.py [OPTIONS]`

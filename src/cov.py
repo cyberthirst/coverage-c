@@ -3,8 +3,8 @@ import argparse
 import shutil
 import subprocess
 
-from utils import copy_tree, HASH
-from instrumentation import instrument_files, construct_c_helpers
+from src.utils import copy_tree, HASH
+from src.instrumentation import instrument_files, construct_c_helpers
 
 
 # prepares the output files/directory and copies the inputs to them

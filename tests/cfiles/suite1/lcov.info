@@ -1,0 +1,14 @@
+TN:test
+SF:basic.c
+DA:4,1
+DA:5,1
+LH:2
+LF:2
+end_of_record
+TN:test
+SF:foo.c
+DA:4,1
+DA:5,1
+LH:2
+LF:2
+end_of_record

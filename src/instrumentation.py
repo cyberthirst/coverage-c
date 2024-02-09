@@ -4,8 +4,8 @@ from pycparser.c_ast import FuncDef
 from pycparser import parse_file
 
 
-from utils import normalize_filename, HASH
-from visitors import InstrumentationVisitor
+from src.utils import normalize_filename, HASH
+from src.visitors import InstrumentationVisitor
 
 
 def instrument_file(input_file, root, main_coords, instrumentation_info):
@@ -39,7 +39,6 @@ def instrument_file(input_file, root, main_coords, instrumentation_info):
 
 
 def instrument_files(path):
-    # Determine if the input is a file or directory
     if os.path.isfile(path):
         root = os.path.dirname(path)
         c_files = [path]
@@ -76,7 +75,7 @@ def get_instrumentation_info(input_file):
 
     lv = InstrumentationVisitor()
     main_coords = []
-    #visit only the bodies of the function definitions
+    # visit only the bodies of the function definitions
     for node in ast.ext:
         if isinstance(node, FuncDef):
             lv.visit(node.body)
@@ -85,9 +84,9 @@ def get_instrumentation_info(input_file):
 
     assert len(main_coords) <= 1, "There should be at most one main function."
 
-    #ast.show(showcoord=True)
+    # ast.show(showcoord=True)
 
-    #for main_coords returns either None or the first element of the list
+    # for main_coords returns either None or the first element of the list
     return lv.get_instrumentation_info(), next(iter(main_coords), None)
 
 
