@@ -1,8 +1,6 @@
-import os
 import pytest
-from unittest.mock import mock_open, patch
+from unittest.mock import mock_open, patch, MagicMock
 
-from src.utils import HASH
 from src.cov import convert_to_lcov
 from src.cov import preprocess_files
 
@@ -56,32 +54,96 @@ def test_convert_to_lcov(mocker, mock_file_contents, file_to_lf, file_translatio
     write_mock.assert_has_calls(expected_calls, any_order=True)
 
 
-# Fixture for common setup
-'''
 @pytest.fixture
-def args(mocker):
-    mock_args = mocker.MagicMock()
-    mock_args.input_file = None
+def mock_args():
+    return MagicMock()
+
+@patch('os.path.isdir', return_value=False)
+@patch('shutil.copy2')
+def test_preprocess_files_input_file_only(mock_copy2, mock_isdir, mock_args):
+    mock_args.input_file = 'path/to/input_file.c'
     mock_args.output_file = None
-    mock_args.input_dir = None
     mock_args.output_dir = None
-    return mock_args
+    mock_args.input_dir = None
 
+    source_dir, path_to_process, file_translation = preprocess_files(mock_args)
 
-def input_file_output_file(mocker, args):
-    # Configure the mock arguments for this specific test
-    args.input_file = 'path/to/input_file.c'
-    args.output_file = 'path/to/output_file.c'
+    assert source_dir == 'path/to'
+    assert path_to_process == 'path/to/input_file.c'
+    assert file_translation == {}
 
-    # Mock the necessary functions
-    mocker.patch('os.path.isdir', return_value=False)
-    mocker.patch('os.path.dirname', return_value='path/to')
-    mock_copy = mocker.patch('shutil.copy2')
+@patch('os.path.isdir', return_value=False)
+@patch('shutil.copy2')
+def test_preprocess_files_input_and_output_file(mock_copy2, mock_isdir, mock_args):
+    mock_args.input_file = 'path/to/input_file.c'
+    mock_args.output_file = 'path/to/output_file.c'
+    mock_args.output_dir = None
+    mock_args.input_dir = None
 
-    source_dir, path_to_process, file_translation = preprocess_files(args)
+    source_dir, path_to_process, file_translation = preprocess_files(mock_args)
 
-    mock_copy.assert_called_once_with('path/to/input_file.c', 'path/to/output_file.c')
+    assert source_dir == 'path/to'
     assert path_to_process == 'path/to/output_file.c'
     assert file_translation == {'path/to/output_file.c': 'input_file.c'}
+
+@patch('os.path.isdir', return_value=False)
+@patch('shutil.copy2')
+def test_preprocess_files_input_file_and_output_dir(mock_copy2, mock_isdir, mock_args):
+    mock_args.input_file = 'path/to/input_file.c'
+    mock_args.output_dir = 'path/to/output'
+    mock_args.output_file = None
+    mock_args.input_dir = None
+
+    source_dir, path_to_process, file_translation = preprocess_files(mock_args)
+
+    expected_output_path = 'path/to/output/input_file.c'
     assert source_dir == 'path/to'
-'''
+    assert path_to_process == expected_output_path
+    assert file_translation == {}
+
+
+@patch('os.path.isdir', return_value=True)
+def test_preprocess_files_input_dir_only(mock_isdir, mock_args):
+    mock_args.input_file = None
+    mock_args.output_file = None
+    mock_args.output_dir = None
+    mock_args.input_dir = 'path/to/input_dir'
+
+    source_dir, path_to_process, file_translation = preprocess_files(mock_args)
+
+    assert source_dir == 'path/to/input_dir'
+    assert path_to_process == 'path/to/input_dir'
+    assert file_translation == {}
+
+
+@patch('src.cov.copy_tree')
+@patch('os.path.isdir', return_value=True)
+def test_preprocess_files_input_dir_and_output_dir(mock_isdir, mock_copy_tree, mock_args):
+    mock_args.input_file = None
+    mock_args.output_file = None
+    mock_args.output_dir = 'path/to/output_dir'
+    mock_args.input_dir = 'path/to/input_dir'
+
+    source_dir, path_to_process, file_translation = preprocess_files(mock_args)
+
+    mock_copy_tree.assert_called_once_with('path/to/input_dir', 'path/to/output_dir')
+    assert source_dir == 'path/to/input_dir'
+    assert path_to_process == 'path/to/output_dir'
+    assert file_translation == {}
+
+
+@patch('builtins.print')
+@patch('os.path.isdir', return_value=True)
+def test_preprocess_files_input_dir_no_output_dir_warning(mock_isdir, mock_print, mock_args):
+    mock_args.input_file = None
+    mock_args.output_file = None
+    mock_args.output_dir = None
+    mock_args.input_dir = 'path/to/input_dir'
+
+    source_dir, path_to_process, file_translation = preprocess_files(mock_args)
+
+    mock_print.assert_called_with(
+        "Warning: No output dir specified. The dir path/to/input_dir will be modified in-place.")
+    assert source_dir == 'path/to/input_dir'
+    assert path_to_process == 'path/to/input_dir'
+    assert file_translation == {}
