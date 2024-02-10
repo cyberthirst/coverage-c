@@ -2,7 +2,7 @@ import os
 import pytest
 from unittest.mock import mock_open, patch, call, MagicMock
 
-from src.instrumentation import construct_c_helpers, normalize_filename, instrument_file
+from src.instrumentation import construct_c_helpers, instrument_file, get_instrumentation_info
 from src.utils import HASH
 
 @pytest.fixture
@@ -89,3 +89,27 @@ def test_instrument_file(input_params, basic_c_content, expected_instrumented_co
     print(f"actual_written_content: {actual_written_content}")
     print(f"expected_content: {expected_content}")
     assert actual_written_content == expected_content, "The instrumented file content does not match the expected output."
+
+
+c_file_content = """
+#include <stdio.h>
+
+int foo() {
+    int x = 5;
+    return 0;
+}
+"""
+
+@pytest.fixture
+def c_file(tmp_path):
+    temp_c_file = tmp_path / "foo.c"
+    temp_c_file.write_text(c_file_content)
+    return str(temp_c_file)
+
+
+def test_get_instrumentation_info_with_real_file(c_file):
+    instrumentation_info, main_coords = get_instrumentation_info(c_file)
+
+    assert instrumentation_info == {5: 5, 6: 5}, "Incorrect instrumentation_info"
+    assert main_coords is None, "Expected main_coords to not be None"
+
